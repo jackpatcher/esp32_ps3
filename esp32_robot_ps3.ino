@@ -50,8 +50,15 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 // Global Variables
 float posS1 = 90.0;
 float posS2 = 90.0;
+float targetS1 = 90.0;  // ตำแหน่งเป้าหมาย
+float targetS2 = 90.0;
 unsigned long lastServoUpdate = 0;
-#define SERVO_UPDATE_INTERVAL 20  // อัพเดท servo ทุก 20ms
+#define SERVO_UPDATE_INTERVAL 50  // ลด update rate เป็น 50ms (จาก 20ms)
+
+// Servo Control Variables
+bool servoMoving = false;
+unsigned long lastButtonPress = 0;
+#define BUTTON_DEBOUNCE 100  // ป้องกันการกดซ้ำเร็วเกินไป
 
 // --- Motor Control Functions ---
 void setupMotors() {
@@ -155,16 +162,35 @@ void setupServos() {
 }
 
 void updateServos() {
-  // อัพเดท servo แบบ non-blocking
+  // อัพเดท servo แบบ smooth interpolation
   if (millis() - lastServoUpdate >= SERVO_UPDATE_INTERVAL) {
     lastServoUpdate = millis();
+    
+    // Smooth movement - ค่อยๆ เคลื่อนที่ไปยังตำแหน่งเป้าหมาย
+    float smoothFactor = 0.3;  // ยิ่งน้อย ยิ่งนุ่มนวล (0.1-0.5)
+    
+    posS1 += (targetS1 - posS1) * smoothFactor;
+    posS2 += (targetS2 - posS2) * smoothFactor;
     
     // จำกัดค่ามุม
     posS1 = constrain(posS1, 20, 170);
     posS2 = constrain(posS2, 20, 150);
+    targetS1 = constrain(targetS1, 20, 170);
+    targetS2 = constrain(targetS2, 20, 150);
     
-    servo_s1.write(posS1);
-    servo_s2.write(posS2);
+    // เขียนค่าไปที่ servo เฉพาะเมื่อเคลื่อนที่
+    if (abs(posS1 - targetS1) > 0.5 || abs(posS2 - targetS2) > 0.5) {
+      servo_s1.write((int)posS1);
+      servo_s2.write((int)posS2);
+      servoMoving = true;
+    } else {
+      // หยุดนิ่งแล้ว - เขียนค่าครั้งสุดท้ายแล้วไม่ต้องอัพเดทอีก
+      if (servoMoving) {
+        servo_s1.write((int)targetS1);
+        servo_s2.write((int)targetS2);
+        servoMoving = false;
+      }
+    }
   }
 }
 
@@ -238,39 +264,29 @@ void notify() {
   int xAxis = Ps3.data.analog.stick.lx;
   int rxAxis = Ps3.data.analog.stick.rx;
   
-  bool isDriving = false;
-  
   // 1. Analog Stick Control (Dead zone: -50 ถึง 50)
   if (yAxis <= -50) {
     forward(100);
-    isDriving = true;
   } else if (yAxis >= 50) {
     backward(100);
-    isDriving = true;
   } else if (xAxis >= 50) {
     strafeRight(100);
-    isDriving = true;
   } else if (xAxis <= -50) {
     strafeLeft(100);
-    isDriving = true;
   } else if (rxAxis >= 50) {
     // Rotate Clockwise
     motor(1, 50);
     motor(2, -50);
     motor(3, -50);
     motor(4, 50);
-    isDriving = true;
   } else if (rxAxis <= -50) {
     // Rotate Counter-Clockwise
     motor(1, -50);
     motor(2, 50);
     motor(3, 50);
     motor(4, -50);
-    isDriving = true;
-  }
-  
-  // 2. D-Pad Control (ถ้าไม่ได้ใช้ analog stick)
-  if (!isDriving) {
+  } else {
+    // ไม่มี analog stick input - ตรวจสอบ D-Pad
     if (Ps3.data.button.up) {
       forward(30);
     } else if (Ps3.data.button.down) {
@@ -280,22 +296,74 @@ void notify() {
     } else if (Ps3.data.button.right) {
       strafeRight(30);
     } else {
+      // ไม่มีการควบคุมใดๆ - หยุด motor
       allOff();
     }
   }
   
-  // 3. Servo Control (ค่อยๆ เปลี่ยน ไม่ใช้ timer)
-  if (Ps3.data.button.cross) {
-    posS1 -= 0.5;  // ลดทีละน้อย เพื่อความนุ่มนวล
-  }
-  if (Ps3.data.button.triangle) {
-    posS1 += 0.5;
-  }
+  
+  // 2. Servo Control - ใช้ปุ่มรูปร่างเท่านั้น (ไม่ใช้ D-Pad)
+  unsigned long currentTime = millis();
+  
+  // Servo 1 (S1): Square=ลด, Circle=เพิ่ม
   if (Ps3.data.button.square) {
-    posS2 -= 0.5;
+    if (currentTime - lastButtonPress > BUTTON_DEBOUNCE) {
+      targetS1 -= 5.0;  // ◻️ สี่เหลี่ยม - ลดทีละ 5 องศา
+      lastButtonPress = currentTime;
+      Serial.print("S1 ลด -> ");
+      Serial.println(targetS1);
+    }
   }
   if (Ps3.data.button.circle) {
-    posS2 += 0.5;
+    if (currentTime - lastButtonPress > BUTTON_DEBOUNCE) {
+      targetS1 += 5.0;  // ⭕ วงกลม - เพิ่มทีละ 5 องศา
+      lastButtonPress = currentTime;
+      Serial.print("S1 เพิ่ม -> ");
+      Serial.println(targetS1);
+    }
+  }
+  
+  // Servo 2 (S2): Cross=ลด, Triangle=เพิ่ม
+  if (Ps3.data.button.cross) {
+    if (currentTime - lastButtonPress > BUTTON_DEBOUNCE) {
+      targetS2 -= 5.0;  // ❌ กากบาท - ลดทีละ 5 องศา
+      lastButtonPress = currentTime;
+      Serial.print("S2 ลด -> ");
+      Serial.println(targetS2);
+    }
+  }
+  if (Ps3.data.button.triangle) {
+    if (currentTime - lastButtonPress > BUTTON_DEBOUNCE) {
+      targetS2 += 5.0;  // 🔺 สามเหลี่ยม - เพิ่มทีละ 5 องศา
+      lastButtonPress = currentTime;
+      Serial.print("S2 เพิ่ม -> ");
+      Serial.println(targetS2);
+    }
+  }
+  
+  // Reset servo ไปตำแหน่งกลาง (กด Start)
+  if (Ps3.data.button.start) {
+    if (currentTime - lastButtonPress > BUTTON_DEBOUNCE) {
+      targetS1 = 90.0;
+      targetS2 = 90.0;
+      lastButtonPress = currentTime;
+      Serial.println("Servos reset to center");
+    }
+  }
+  
+  // แสดงตำแหน่ง servo (กด Select)
+  if (Ps3.data.button.select) {
+    if (currentTime - lastButtonPress > 500) {  // ทุก 500ms
+      Serial.print("S1: ");
+      Serial.print(posS1);
+      Serial.print(" -> ");
+      Serial.print(targetS1);
+      Serial.print(" | S2: ");
+      Serial.print(posS2);
+      Serial.print(" -> ");
+      Serial.println(targetS2);
+      lastButtonPress = currentTime;
+    }
   }
 }
 
