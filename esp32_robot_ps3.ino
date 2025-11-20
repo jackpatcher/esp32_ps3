@@ -1,4 +1,5 @@
 // ESP32 Robot Control with PS3 Controller - Arduino Version
+// esp32 2.0.17 espressif
 // Fixed servo freezing issue
 
 #include <Ps3Controller.h>
@@ -28,17 +29,17 @@
 
 // --- PWM Settings ---
 #define PWM_FREQ 5000
-#define PWM_RESOLUTION 10  // 10-bit resolution (0-1023)
+#define PWM_RESOLUTION 8  // 8-bit resolution (0-255) ตามไฟล์ old
 
-// Motor PWM Channels (0-7 สำหรับ motor)
-#define M1A_CHANNEL 0
-#define M1B_CHANNEL 1
-#define M2A_CHANNEL 2
-#define M2B_CHANNEL 3
-#define M3A_CHANNEL 4
-#define M3B_CHANNEL 5
-#define M4A_CHANNEL 6
-#define M4B_CHANNEL 7
+// Motor PWM Channels (ตามไฟล์ old: 2-9 สำหรับ motor)
+#define M1A_CHANNEL 6
+#define M1B_CHANNEL 7
+#define M2A_CHANNEL 4
+#define M2B_CHANNEL 5
+#define M3A_CHANNEL 3
+#define M3B_CHANNEL 2
+#define M4A_CHANNEL 8
+#define M4B_CHANNEL 9
 
 // Servo objects (ใช้ ESP32Servo library แยกจาก PWM)
 Servo servo_s1;
@@ -50,15 +51,8 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 // Global Variables
 float posS1 = 90.0;
 float posS2 = 90.0;
-float targetS1 = 90.0;  // ตำแหน่งเป้าหมาย
-float targetS2 = 90.0;
-unsigned long lastServoUpdate = 0;
-#define SERVO_UPDATE_INTERVAL 50  // ลด update rate เป็น 50ms (จาก 20ms)
-
-// Servo Control Variables
-bool servoMoving = false;
-unsigned long lastButtonPress = 0;
-#define BUTTON_DEBOUNCE 100  // ป้องกันการกดซ้ำเร็วเกินไป
+float lastPosS1 = 90.0;  // เก็บค่าครั้งล่าสุดเพื่อเปรียบเทียบ
+float lastPosS2 = 90.0;
 
 // --- Motor Control Functions ---
 void setupMotors() {
@@ -85,7 +79,10 @@ void setupMotors() {
 
 void motor(int motorNum, int speed) {
   // speed: -100 (full reverse) ถึง 100 (full forward)
-  int dutyCycle = map(abs(speed), 0, 100, 0, 1023);
+  // ใช้ 8-bit PWM (0-255) ตามไฟล์ old
+  int dutyCycle = abs(speed) * 2.55;  // แปลง 0-100 เป็น 0-255
+  if (dutyCycle > 255) dutyCycle = 255;
+  if (dutyCycle < 0) dutyCycle = 0;
   
   int channelA, channelB;
   
@@ -98,14 +95,14 @@ void motor(int motorNum, int speed) {
   }
   
   if (speed > 0) {  // Forward
-    ledcWrite(channelA, 1023 - dutyCycle);
-    ledcWrite(channelB, 1023);
+    ledcWrite(channelA, 255 - dutyCycle);
+    ledcWrite(channelB, 255);
   } else if (speed < 0) {  // Reverse
-    ledcWrite(channelA, 1023);
-    ledcWrite(channelB, 1023 - dutyCycle);
+    ledcWrite(channelA, 255);
+    ledcWrite(channelB, 255 - dutyCycle);
   } else {  // Stop
-    ledcWrite(channelA, 1023);
-    ledcWrite(channelB, 1023);
+    ledcWrite(channelA, 255);
+    ledcWrite(channelB, 255);
   }
 }
 
@@ -144,54 +141,29 @@ void strafeRight(int speed) {
   motor(4, -speed);
 }
 
-// --- Servo Control Functions (แก้ปัญหาค้าง) ---
+// --- Servo Control Functions (แบบไฟล์ old - แก้ปัญหาค้าง) ---
 void setupServos() {
-  // ใช้ ESP32Servo library แทน PWM ธรรมดา
-  // จะไม่มีปัญหา conflict กับ motor PWM
+  // รอให้แรงดันไฟเสถียรก่อน
+  delay(500);
+  
+  // ใช้ค่า pulse width ตาม NKP_Servo (544-2400)
   servo_s1.setPeriodHertz(50);  // 50Hz สำหรับ servo
   servo_s2.setPeriodHertz(50);
   
-  servo_s1.attach(SERVO_S1_PIN, 500, 2500);  // min, max pulse width
-  servo_s2.attach(SERVO_S2_PIN, 500, 2500);
+  servo_s1.attach(SERVO_S1_PIN, 544, 2400);  // NKP_Servo pulse width
+  servo_s2.attach(SERVO_S2_PIN, 544, 2400);
   
-  // ตั้งค่าเริ่มต้น
-  servo_s1.write(posS1);
-  servo_s2.write(posS2);
+  // ตั้งค่าเริ่มต้น - เขียนครั้งเดียวช้าๆ
+  servo_s1.write((int)posS1);
+  delay(100);
+  servo_s2.write((int)posS2);
+  delay(100);
   
-  delay(100);  // รอให้ servo เคลื่อนที่ไปตำแหน่งเริ่มต้น
-}
-
-void updateServos() {
-  // อัพเดท servo แบบ smooth interpolation
-  if (millis() - lastServoUpdate >= SERVO_UPDATE_INTERVAL) {
-    lastServoUpdate = millis();
-    
-    // Smooth movement - ค่อยๆ เคลื่อนที่ไปยังตำแหน่งเป้าหมาย
-    float smoothFactor = 0.3;  // ยิ่งน้อย ยิ่งนุ่มนวล (0.1-0.5)
-    
-    posS1 += (targetS1 - posS1) * smoothFactor;
-    posS2 += (targetS2 - posS2) * smoothFactor;
-    
-    // จำกัดค่ามุม
-    posS1 = constrain(posS1, 20, 170);
-    posS2 = constrain(posS2, 20, 150);
-    targetS1 = constrain(targetS1, 20, 170);
-    targetS2 = constrain(targetS2, 20, 150);
-    
-    // เขียนค่าไปที่ servo เฉพาะเมื่อเคลื่อนที่
-    if (abs(posS1 - targetS1) > 0.5 || abs(posS2 - targetS2) > 0.5) {
-      servo_s1.write((int)posS1);
-      servo_s2.write((int)posS2);
-      servoMoving = true;
-    } else {
-      // หยุดนิ่งแล้ว - เขียนค่าครั้งสุดท้ายแล้วไม่ต้องอัพเดทอีก
-      if (servoMoving) {
-        servo_s1.write((int)targetS1);
-        servo_s2.write((int)targetS2);
-        servoMoving = false;
-      }
-    }
-  }
+  // บันทึกค่าเริ่มต้น
+  lastPosS1 = posS1;
+  lastPosS2 = posS2;
+  
+  Serial.println("Servos initialized at center position (NKP_Servo)");
 }
 
 // --- OLED Display Functions ---
@@ -286,7 +258,7 @@ void notify() {
     motor(3, 50);
     motor(4, -50);
   } else {
-    // ไม่มี analog stick input - ตรวจสอบ D-Pad
+    // ไม่มี analog stick input - ตรวจสอบ D-Pad สำหรับมอเตอร์เท่านั้น
     if (Ps3.data.button.up) {
       forward(30);
     } else if (Ps3.data.button.down) {
@@ -301,85 +273,59 @@ void notify() {
     }
   }
   
-  
-  // 2. Servo Control - ใช้ปุ่มรูปร่างเท่านั้น (ไม่ใช้ D-Pad)
-  unsigned long currentTime = millis();
-  
-  // Servo 1 (S1): Square=ลด, Circle=เพิ่ม
-  if (Ps3.data.button.square) {
-    if (currentTime - lastButtonPress > BUTTON_DEBOUNCE) {
-      targetS1 -= 5.0;  // ◻️ สี่เหลี่ยม - ลดทีละ 5 องศา
-      lastButtonPress = currentTime;
-      Serial.print("S1 ลด -> ");
-      Serial.println(targetS1);
-    }
-  }
-  if (Ps3.data.button.circle) {
-    if (currentTime - lastButtonPress > BUTTON_DEBOUNCE) {
-      targetS1 += 5.0;  // ⭕ วงกลม - เพิ่มทีละ 5 องศา
-      lastButtonPress = currentTime;
-      Serial.print("S1 เพิ่ม -> ");
-      Serial.println(targetS1);
-    }
-  }
-  
-  // Servo 2 (S2): Cross=ลด, Triangle=เพิ่ม
+  // 2. Servo Control - ใช้ปุ่มรูปร่าง (ตามไฟล์ old - ไม่มี debounce)
+  // Servo 1 (S1): Cross=ลด, Triangle=เพิ่ม
   if (Ps3.data.button.cross) {
-    if (currentTime - lastButtonPress > BUTTON_DEBOUNCE) {
-      targetS2 -= 5.0;  // ❌ กากบาท - ลดทีละ 5 องศา
-      lastButtonPress = currentTime;
-      Serial.print("S2 ลด -> ");
-      Serial.println(targetS2);
-    }
+    posS1 -= 1.5;  // ❌ กากบาท - ลดทีละ 1.5 องศา
   }
   if (Ps3.data.button.triangle) {
-    if (currentTime - lastButtonPress > BUTTON_DEBOUNCE) {
-      targetS2 += 5.0;  // 🔺 สามเหลี่ยม - เพิ่มทีละ 5 องศา
-      lastButtonPress = currentTime;
-      Serial.print("S2 เพิ่ม -> ");
-      Serial.println(targetS2);
-    }
+    posS1 += 1.5;  // 🔺 สามเหลี่ยม - เพิ่มทีละ 1.5 องศา
   }
   
-  // Reset servo ไปตำแหน่งกลาง (กด Start)
-  if (Ps3.data.button.start) {
-    if (currentTime - lastButtonPress > BUTTON_DEBOUNCE) {
-      targetS1 = 90.0;
-      targetS2 = 90.0;
-      lastButtonPress = currentTime;
-      Serial.println("Servos reset to center");
-    }
+  // Servo 2 (S2): Square=ลด, Circle=เพิ่ม
+  if (Ps3.data.button.square) {
+    posS2 -= 1.5;  // ◻️ สี่เหลี่ยม - ลดทีละ 1.5 องศา
+  }
+  if (Ps3.data.button.circle) {
+    posS2 += 1.5;  // ⭕ วงกลม - เพิ่มทีละ 1.5 องศา
   }
   
-  // แสดงตำแหน่ง servo (กด Select)
-  if (Ps3.data.button.select) {
-    if (currentTime - lastButtonPress > 500) {  // ทุก 500ms
-      Serial.print("S1: ");
-      Serial.print(posS1);
-      Serial.print(" -> ");
-      Serial.print(targetS1);
-      Serial.print(" | S2: ");
-      Serial.print(posS2);
-      Serial.print(" -> ");
-      Serial.println(targetS2);
-      lastButtonPress = currentTime;
-    }
+  // จำกัดค่ามุม servo (ตามไฟล์ old)
+  if (posS1 > 170) posS1 = 170;
+  if (posS1 < 20) posS1 = 20;
+  if (posS2 > 150) posS2 = 150;
+  if (posS2 < 20) posS2 = 20;
+  
+  // เขียนค่าไปที่ servo เฉพาะเมื่อมีการเปลี่ยนแปลงเท่านั้น
+  if (abs(posS1 - lastPosS1) > 0.1) {
+    servo_s1.write((int)posS1);
+    lastPosS1 = posS1;
+    Serial.print("S1: ");
+    Serial.println((int)posS1);
+  }
+  if (abs(posS2 - lastPosS2) > 0.1) {
+    servo_s2.write((int)posS2);
+    lastPosS2 = posS2;
+    Serial.print("S2: ");
+    Serial.println((int)posS2);
   }
 }
 
 // --- Setup Function ---
 void setup() {
   Serial.begin(115200);
+  delay(1000);  // รอให้ระบบไฟเสถียร
   Serial.println("ESP32 PS3 Robot Starting...");
   
   // Initialize OLED
   setupOLED();
   
-  // Initialize Motors
+  // Initialize Motors ก่อน (ใช้ไฟน้อยกว่า)
   setupMotors();
   allOff();
+  delay(300);
   
-  // Initialize Servos (แก้ปัญหาค้าง)
+  // Initialize Servos ทีหลัง (แก้ปัญหาค้าง + brownout)
   setupServos();
   
   // Initialize PS3 Controller
@@ -398,16 +344,14 @@ void setup() {
   Serial.println("Waiting for PS3 controller connection...");
   
   displayMacAddress(mac);
-  delay(3000);
+  delay(2000);
   
   displayStatus("Waiting for\nPS3 Controller...");
+  Serial.println("System Ready!");
 }
 
 // --- Main Loop ---
 void loop() {
-  // อัพเดท servo position (แบบ non-blocking)
-  updateServos();
-  
-  // Delay เล็กน้อยเพื่อไม่ให้ CPU เต็ม
+  // ไม่ต้องอัพเดท servo ใน loop แล้ว (เขียนตรงใน notify แทน)
   delay(10);
 }
