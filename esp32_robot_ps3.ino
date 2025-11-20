@@ -54,6 +54,11 @@ float posS2 = 90.0;
 float lastPosS1 = 90.0;  // เก็บค่าครั้งล่าสุดเพื่อเปรียบเทียบ
 float lastPosS2 = 90.0;
 
+// Display update
+unsigned long lastDisplayUpdate = 0;
+#define DISPLAY_UPDATE_INTERVAL 100  // อัพเดทจอทุก 100ms
+bool ps3Connected = false;
+
 // --- Motor Control Functions ---
 void setupMotors() {
   // Setup PWM channels สำหรับ motors
@@ -183,16 +188,12 @@ void setupOLED() {
 
 void displayMacAddress(String mac) {
   display.clearDisplay();
-  display.setTextSize(1);
+  display.setTextSize(2);
   display.setCursor(0, 0);
-  display.println("ESP32 BT Address:");
-  display.println("----------------");
-  display.setTextSize(1);
-  display.setCursor(0, 20);
-  display.println("Use this for");
-  display.println("PS3 pairing:");
-  display.setTextSize(1);
-  display.setCursor(0, 50);
+  display.println("Waiting PS3...");
+  display.println("");
+  display.setTextSize(2);
+  display.setCursor(0, 30);
   display.println(mac);
   display.display();
 }
@@ -214,10 +215,31 @@ void displayConnected() {
   display.display();
 }
 
+void displayServoValues() {
+  display.clearDisplay();
+  
+  // แสดงค่า Servo S1
+  display.setTextSize(2);
+  display.setCursor(0, 10);
+  display.print("S1:");
+  display.print((int)posS1);
+  display.print((char)247);  // สัญลักษณ์องศา °
+  
+  // แสดงค่า Servo S2
+  display.setCursor(0, 35);
+  display.print("S2:");
+  display.print((int)posS2);
+  display.print((char)247);
+  
+  display.display();
+}
+
 // --- PS3 Controller Callbacks ---
 void onConnect() {
   Serial.println("PS3 Controller Connected!");
+  ps3Connected = true;
   displayConnected();
+  delay(1000);  // แสดงข้อความ Connected 1 วินาที
   
   // เซ็ต LED และ rumble
   Ps3.setPlayer(1);
@@ -226,39 +248,29 @@ void onConnect() {
 
 void onDisconnect() {
   Serial.println("PS3 Controller Disconnected!");
+  ps3Connected = false;
   allOff();  // หยุด motor ทันที
   displayStatus("Disconnected\nWaiting...");
 }
 
 void notify() {
   // อ่านค่าจาก analog sticks
-  int yAxis = Ps3.data.analog.stick.ly;
-  int xAxis = Ps3.data.analog.stick.lx;
-  int rxAxis = Ps3.data.analog.stick.rx;
+  int yAxisLeft = Ps3.data.analog.stick.ly;   // Stick ซ้าย - แกน Y (บน/ล่าง)
+  int xAxisLeft = Ps3.data.analog.stick.lx;   // Stick ซ้าย - แกน X (ซ้าย/ขวา)
+  int yAxisRight = Ps3.data.analog.stick.ry;  // Stick ขวา - แกน Y (บน/ล่าง) → Servo S1
+  int xAxisRight = Ps3.data.analog.stick.rx;  // Stick ขวา - แกน X (ซ้าย/ขวา) → Servo S2
   
-  // 1. Analog Stick Control (Dead zone: -50 ถึง 50)
-  if (yAxis <= -50) {
+  // 1. Motor Control - ใช้ Analog Stick ซ้าย (Dead zone: -50 ถึง 50)
+  if (yAxisLeft <= -50) {
     forward(100);
-  } else if (yAxis >= 50) {
+  } else if (yAxisLeft >= 50) {
     backward(100);
-  } else if (xAxis >= 50) {
+  } else if (xAxisLeft >= 50) {
     strafeRight(100);
-  } else if (xAxis <= -50) {
+  } else if (xAxisLeft <= -50) {
     strafeLeft(100);
-  } else if (rxAxis >= 50) {
-    // Rotate Clockwise
-    motor(1, 50);
-    motor(2, -50);
-    motor(3, -50);
-    motor(4, 50);
-  } else if (rxAxis <= -50) {
-    // Rotate Counter-Clockwise
-    motor(1, -50);
-    motor(2, 50);
-    motor(3, 50);
-    motor(4, -50);
   } else {
-    // ไม่มี analog stick input - ตรวจสอบ D-Pad สำหรับมอเตอร์เท่านั้น
+    // ไม่มี analog stick ซ้าย input - ตรวจสอบ D-Pad
     if (Ps3.data.button.up) {
       forward(30);
     } else if (Ps3.data.button.down) {
@@ -273,37 +285,51 @@ void notify() {
     }
   }
   
-  // 2. Servo Control - ใช้ปุ่มรูปร่าง (ตามไฟล์ old - ไม่มี debounce)
-  // Servo 1 (S1): Cross=ลด, Triangle=เพิ่ม
+  // 2. Servo Control - ใช้ Analog Stick ขวา (แบบ Analog ต่อเนื่อง)
+  // Servo S1: Stick ขวา ขึ้น/ลง (yAxisRight)
+  if (yAxisRight <= -20) {  // ดันขึ้น (ค่าติดลบ) → เพิ่มมุม S1
+    float speed = abs(yAxisRight) / 127.0;  // แปลงเป็น 0.0-1.0
+    posS1 += 2.0 * speed;  // ความเร็วปรับตาม analog
+  } else if (yAxisRight >= 20) {  // ดันลง (ค่าบวก) → ลดมุม S1
+    float speed = abs(yAxisRight) / 127.0;
+    posS1 -= 2.0 * speed;
+  }
+  
+  // Servo S2: Stick ขวา ซ้าย/ขวา (xAxisRight)
+  if (xAxisRight >= 20) {  // ดันขวา → เพิ่มมุม S2
+    float speed = abs(xAxisRight) / 127.0;
+    posS2 += 2.0 * speed;
+  } else if (xAxisRight <= -20) {  // ดันซ้าย → ลดมุม S2
+    float speed = abs(xAxisRight) / 127.0;
+    posS2 -= 2.0 * speed;
+  }
+  
+  // 3. Servo Control - ใช้ปุ่มรูปร่าง (สำรอง - ควบคุมแบบละเอียด)
   if (Ps3.data.button.cross) {
-    posS1 -= 1.5;  // ❌ กากบาท - ลดทีละ 1.5 องศา
+    posS1 -= 1.5;  // ❌ กากบาท - ลด S1
   }
   if (Ps3.data.button.triangle) {
-    posS1 += 1.5;  // 🔺 สามเหลี่ยม - เพิ่มทีละ 1.5 องศา
+    posS1 += 1.5;  // 🔺 สามเหลี่ยม - เพิ่ม S1
   }
-  
-  // Servo 2 (S2): Square=ลด, Circle=เพิ่ม
   if (Ps3.data.button.square) {
-    posS2 -= 1.5;  // ◻️ สี่เหลี่ยม - ลดทีละ 1.5 องศา
+    posS2 -= 1.5;  // ◻️ สี่เหลี่ยม - ลด S2
   }
   if (Ps3.data.button.circle) {
-    posS2 += 1.5;  // ⭕ วงกลม - เพิ่มทีละ 1.5 องศา
+    posS2 += 1.5;  // ⭕ วงกลม - เพิ่ม S2
   }
   
-  // จำกัดค่ามุม servo (ตามไฟล์ old)
-  if (posS1 > 170) posS1 = 170;
-  if (posS1 < 20) posS1 = 20;
-  if (posS2 > 150) posS2 = 150;
-  if (posS2 < 20) posS2 = 20;
+  // จำกัดค่ามุม servo (ค่าที่แนะนำเดิม)
+  posS1 = constrain(posS1, 70, 170); //ตัวหนีบ
+  posS2 = constrain(posS2, 20, 170); // ตัวยก
   
   // เขียนค่าไปที่ servo เฉพาะเมื่อมีการเปลี่ยนแปลงเท่านั้น
-  if (abs(posS1 - lastPosS1) > 0.1) {
+  if (abs(posS1 - lastPosS1) > 0.5) {
     servo_s1.write((int)posS1);
     lastPosS1 = posS1;
     Serial.print("S1: ");
     Serial.println((int)posS1);
   }
-  if (abs(posS2 - lastPosS2) > 0.1) {
+  if (abs(posS2 - lastPosS2) > 0.5) {
     servo_s2.write((int)posS2);
     lastPosS2 = posS2;
     Serial.print("S2: ");
@@ -344,14 +370,19 @@ void setup() {
   Serial.println("Waiting for PS3 controller connection...");
   
   displayMacAddress(mac);
-  delay(2000);
   
-  displayStatus("Waiting for\nPS3 Controller...");
   Serial.println("System Ready!");
 }
 
 // --- Main Loop ---
 void loop() {
-  // ไม่ต้องอัพเดท servo ใน loop แล้ว (เขียนตรงใน notify แทน)
+  // อัพเดทจอแสดงค่า servo เมื่อเชื่อมต่อ PS3
+  if (ps3Connected) {
+    if (millis() - lastDisplayUpdate >= DISPLAY_UPDATE_INTERVAL) {
+      lastDisplayUpdate = millis();
+      displayServoValues();
+    }
+  }
+  
   delay(10);
 }
