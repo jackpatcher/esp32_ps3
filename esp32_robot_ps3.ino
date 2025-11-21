@@ -1,7 +1,7 @@
 // ESP32 Robot Control with PS3 Controller - Arduino Version
 // esp32 2.0.17 espressif
 // Fixed servo freezing issue
-
+// ล้อ 1 = หน้า ซ้าย // ล้อ 2 =หลัง ซ้าย // ล้อ 3 = หน้า ขวา// ล้อ 4 = หลัง ขวา
 #include <Ps3Controller.h>
 #include <ESP32Servo.h>
 #include <Wire.h>
@@ -134,15 +134,15 @@ void backward(int speed) {
 
 void strafeLeft(int speed) {
   motor(1, -speed);
-  motor(2, speed);
-  motor(3, -speed);
+  motor(2, -speed);
+  motor(3, speed);
   motor(4, speed);
 }
 
 void strafeRight(int speed) {
   motor(1, speed);
-  motor(2, -speed);
-  motor(3, speed);
+  motor(2, speed);
+  motor(3, -speed);
   motor(4, -speed);
 }
 
@@ -289,33 +289,33 @@ void notify() {
   // Servo S1: Stick ขวา ขึ้น/ลง (yAxisRight)
   if (yAxisRight <= -20) {  // ดันขึ้น (ค่าติดลบ) → เพิ่มมุม S1
     float speed = abs(yAxisRight) / 127.0;  // แปลงเป็น 0.0-1.0
-    posS1 += 2.0 * speed;  // ความเร็วปรับตาม analog
+    posS2 += 2.0 * speed;  // ความเร็วปรับตาม analog
   } else if (yAxisRight >= 20) {  // ดันลง (ค่าบวก) → ลดมุม S1
     float speed = abs(yAxisRight) / 127.0;
-    posS1 -= 2.0 * speed;
+    posS2 -= 2.0 * speed;
   }
   
   // Servo S2: Stick ขวา ซ้าย/ขวา (xAxisRight)
   if (xAxisRight >= 20) {  // ดันขวา → เพิ่มมุม S2
     float speed = abs(xAxisRight) / 127.0;
-    posS2 += 2.0 * speed;
+    posS1 += 2.0 * speed;
   } else if (xAxisRight <= -20) {  // ดันซ้าย → ลดมุม S2
     float speed = abs(xAxisRight) / 127.0;
-    posS2 -= 2.0 * speed;
+    posS1 -= 2.0 * speed;
   }
   
   // 3. Servo Control - ใช้ปุ่มรูปร่าง (สำรอง - ควบคุมแบบละเอียด)
   if (Ps3.data.button.cross) {
-    posS1 -= 1.5;  // ❌ กากบาท - ลด S1
+    posS2 -= 1.5;  // ❌ กากบาท - ลด S1
   }
   if (Ps3.data.button.triangle) {
-    posS1 += 1.5;  // 🔺 สามเหลี่ยม - เพิ่ม S1
+    posS2 += 1.5;  // 🔺 สามเหลี่ยม - เพิ่ม S1
   }
   if (Ps3.data.button.square) {
-    posS2 -= 1.5;  // ◻️ สี่เหลี่ยม - ลด S2
+    posS1 -= 1.5;  // ◻️ สี่เหลี่ยม - ลด S2
   }
   if (Ps3.data.button.circle) {
-    posS2 += 1.5;  // ⭕ วงกลม - เพิ่ม S2
+    posS1 += 1.5;  // ⭕ วงกลม - เพิ่ม S2
   }
   
   // จำกัดค่ามุม servo (ค่าที่แนะนำเดิม)
